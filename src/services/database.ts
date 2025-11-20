@@ -197,6 +197,7 @@ export class IndexedDBService implements DatabaseService {
             const completeDailyGoal = {
                 date: dailyGoal.date,
                 goals: dailyGoal.goals,
+                visibility: dailyGoal.visibility,
                 updatedAt: new Date().toISOString(),
             };
 

@@ -12,6 +12,7 @@ export interface PlaybackRecord {
 export interface DailyGoal {
     date: string; // YYYY-MM-DD format
     goals: Record<Language, number>;
+    visibility?: Record<Language, boolean>;
     updatedAt: string;
 }
 

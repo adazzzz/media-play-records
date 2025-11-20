@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { databaseService } from "../../services/database";
-import { DailyGoal, PlaybackRecord } from "../../types/database";
+import { DailyGoal, PlaybackRecord, Language } from "../../types/database";
 import { formatDuration } from "../../utils/time";
 import Calendar from "../Calendar";
 import "./History.css";
@@ -11,39 +11,100 @@ interface HistoryProps {
 }
 
 const LANGUAGES = [
-    { key: "cantonese", label: "Cantonese" },
-    { key: "english", label: "English" },
-    { key: "japanese", label: "Japanese" },
-    { key: "spanish", label: "Spanish" },
+    { key: "cantonese", label: "Cantonese", color: "#f97316" },
+    { key: "english", label: "English", color: "#2563eb" },
+    { key: "japanese", label: "Japanese", color: "#16a34a" },
+    { key: "spanish", label: "Spanish", color: "#dc2626" },
 ];
+
+const DEFAULT_LANGUAGE_VISIBILITY = LANGUAGES.reduce(
+    (acc, lang) => ({ ...acc, [lang.key]: true }),
+    {} as Record<string, boolean>
+);
+
+type TimelineSegment = { start: number; end: number };
 
 type DisplayRecord = PlaybackRecord & {
     mergedSessionIds: string[];
     totalDuration: number;
     startDate: string;
     isMerged: boolean;
+    spanStart: number;
+    spanEnd: number;
+    segments: TimelineSegment[];
 };
 
-const getVideoKey = (record: PlaybackRecord) =>
-    `${record.url || record.title}-${record.language}`;
+const normalizeVideoUrl = (url?: string) => {
+    if (!url) return "";
+    try {
+        const parsed = new URL(url);
+        const params = new URLSearchParams(parsed.search);
+        const removableParams = [
+            "t",
+            "time_continue",
+            "start",
+            "si",
+            "pp",
+            "feature",
+            "ab_channel",
+            "spm_id_from",
+            "list",
+            "index",
+            "vclid",
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+        ];
+        removableParams.forEach((param) => params.delete(param));
+        const normalizedSearch = params.toString();
+        return `${parsed.origin}${parsed.pathname}${
+            normalizedSearch ? `?${normalizedSearch}` : ""
+        }`;
+    } catch {
+        return url;
+    }
+};
+
+const getVideoKey = (record: PlaybackRecord) => {
+    const channelKey = (record.channelName || "").trim().toLowerCase();
+    const titleKey = (record.title || "").trim().toLowerCase();
+    return `${channelKey}::${titleKey}::${record.language}`;
+};
+
+const normalizeVisibility = (
+    visibility?: Record<string, boolean>
+): Record<Language, boolean> => ({
+    cantonese: visibility?.cantonese ?? true,
+    english: visibility?.english ?? true,
+    japanese: visibility?.japanese ?? true,
+    spanish: visibility?.spanish ?? true,
+});
 
 const buildDisplayRecords = (
     records: PlaybackRecord[],
     mergeConsecutive: boolean
 ): DisplayRecord[] => {
     if (!mergeConsecutive) {
-        return records.map((record) => ({
-            ...record,
-            mergedSessionIds: [record.sessionId],
-            totalDuration: record.duration,
-            startDate: record.date,
-            isMerged: false,
-        }));
+        return records.map((record) => {
+            const startMs = new Date(record.date).getTime();
+            const endMs = startMs + record.duration * 1000;
+            return {
+                ...record,
+                mergedSessionIds: [record.sessionId],
+                totalDuration: record.duration,
+                startDate: record.date,
+                isMerged: false,
+                spanStart: startMs,
+                spanEnd: endMs,
+                segments: [{ start: startMs, end: endMs }],
+            };
+        });
     }
 
     const merged: DisplayRecord[] = [];
     let current: DisplayRecord | null = null;
     let lastMergedDate: string | null = null;
+
     const pushCurrent = (record: DisplayRecord | null) => {
         if (!record) return;
         merged.push({
@@ -54,6 +115,9 @@ const buildDisplayRecords = (
 
     records.forEach((record) => {
         const videoKey = getVideoKey(record);
+        const startMs = new Date(record.date).getTime();
+        const endMs = startMs + record.duration * 1000;
+
         if (current) {
             const prevDate = lastMergedDate
                 ? new Date(lastMergedDate)
@@ -74,14 +138,18 @@ const buildDisplayRecords = (
             if (shouldMerge) {
                 current.totalDuration += record.duration;
                 current.startDate =
-                    new Date(record.date).getTime() <
-                    new Date(current.startDate).getTime()
+                    startMs < new Date(current.startDate).getTime()
                         ? record.date
                         : current.startDate;
                 current.mergedSessionIds.push(record.sessionId);
+                current.spanStart = Math.min(current.spanStart, startMs);
+                current.spanEnd = Math.max(current.spanEnd, endMs);
+                current.segments.push({ start: startMs, end: endMs });
                 lastMergedDate = record.date;
-                if (!current.channelLogo) current.channelLogo = record.channelLogo;
-                if (!current.channelName) current.channelName = record.channelName;
+                if (!current.channelLogo)
+                    current.channelLogo = record.channelLogo;
+                if (!current.channelName)
+                    current.channelName = record.channelName;
                 return;
             }
 
@@ -96,6 +164,9 @@ const buildDisplayRecords = (
             totalDuration: record.duration,
             startDate: record.date,
             isMerged: false,
+            spanStart: startMs,
+            spanEnd: endMs,
+            segments: [{ start: startMs, end: endMs }],
         };
         lastMergedDate = record.date;
     });
@@ -109,7 +180,7 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
     const [goals, setGoals] = useState<DailyGoal[]>([]);
     const [records, setRecords] = useState<PlaybackRecord[]>([]);
     const [loading, setLoading] = useState(true);
-    const [selectedMonth, setSelectedMonth] = useState<string>(
+    const [selectedMonth] = useState<string>(
         new Date().toISOString().slice(0, 7) // YYYY-MM format
     );
     const [showManualEntry, setShowManualEntry] = useState(false);
@@ -123,6 +194,12 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
     const [goalInputs, setGoalInputs] =
         useState<Record<string, number>>(DEFAULT_DAILY_GOAL);
     const [mergeDisplay, setMergeDisplay] = useState(true);
+    const [languageVisibility, setLanguageVisibility] = useState<
+        Record<string, boolean>
+    >(DEFAULT_LANGUAGE_VISIBILITY);
+    const [activeTab, setActiveTab] = useState<"records" | "settings">(
+        "records"
+    );
 
     useEffect(() => {
         loadGoals();
@@ -143,6 +220,10 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
                 };
             }
             setGoalInputs(dailyGoal.goals);
+            const vis = normalizeVisibility(
+                dailyGoal.visibility || languageVisibility
+            );
+            setLanguageVisibility(vis);
             let allGoals = await databaseService.getAllDailyGoals();
             // Filter goals for selected month
             const filteredGoals = allGoals.filter((goal) =>
@@ -161,7 +242,7 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
             const allRecords = await databaseService.getAllRecords();
 
             // Filter records
-            let filteredRecords = allRecords.filter((record) => {
+            const filteredRecords = allRecords.filter((record) => {
                 // Language filter
                 if (
                     languageFilter !== "all" &&
@@ -216,7 +297,6 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
             japanese: 0,
             spanish: 0,
         };
-        console.log("records", records);
         // Count actual study time, not goal time
         records.forEach((record) => {
             if (record.language in stats) {
@@ -231,6 +311,19 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
     const displayRecords = useMemo(
         () => buildDisplayRecords(records, mergeDisplay),
         [records, mergeDisplay]
+    );
+    const visibleLanguages = LANGUAGES.filter(
+        (lang) => languageVisibility[lang.key]
+    );
+    const languageOptions = [
+        { value: "all", label: "All Languages" },
+        ...visibleLanguages.map((lang) => ({
+            value: lang.key,
+            label: lang.label,
+        })),
+    ];
+    const filteredDisplayRecords = displayRecords.filter(
+        (record) => languageVisibility[record.language]
     );
 
     // Data management functions
@@ -267,11 +360,7 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
             const text = await file.text();
             const data = JSON.parse(text);
 
-            if (
-                !data.version ||
-                !data.records ||
-                !Array.isArray(data.records)
-            ) {
+            if (!data.version || !data.records || !Array.isArray(data.records)) {
                 throw new Error("Invalid data format");
             }
 
@@ -283,9 +372,7 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
             alert("Data imported successfully");
         } catch (error) {
             console.error("Error importing data:", error);
-            alert(
-                "Failed to import data, please ensure file format is correct"
-            );
+            alert("Failed to import data, please ensure file format is correct");
         }
     };
 
@@ -398,13 +485,11 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
             ...editingRecord,
             title: title,
             url: url || editingRecord.url,
-            // If duration hasn't changed, keep the original duration
             duration:
                 durationMinutes === originalDurationMinutes
                     ? editingRecord.duration
                     : durationMinutes * 60,
             language: language as any,
-            // If date hasn't changed, keep the original date
             date:
                 inputDate === originalDate
                     ? editingRecord.date
@@ -474,9 +559,17 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
                 ...(existingDailyGoal ? existingDailyGoal.goals : {}),
             };
             goals[language] = goalInputs[language] || 0;
+            const baseVisibility = normalizeVisibility(
+                existingDailyGoal?.visibility ?? languageVisibility
+            );
+            const visibility: Record<Language, boolean> = {
+                ...baseVisibility,
+                [language as Language]: languageVisibility[language],
+            };
             await databaseService.saveDailyGoal({
                 date: today,
                 goals,
+                visibility,
                 updatedAt: new Date().toISOString(),
             });
             alert("Goal saved successfully");
@@ -490,6 +583,31 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
     // Goal input change
     const handleGoalInputChange = (language: string, value: string) => {
         setGoalInputs((prev) => ({ ...prev, [language]: Number(value) }));
+    };
+
+    // Toggle language visibility in UI
+    const toggleLanguageVisibility = (language: string) => {
+        setLanguageVisibility((prev) => {
+            const next = { ...prev, [language]: !prev[language] };
+            if (!next[language] && languageFilter === language) {
+                setLanguageFilter("all");
+            }
+            // Persist visibility with todays goal snapshot
+            const persist = async () => {
+                const today = new Date().toISOString().split("T")[0];
+                const existingDailyGoal = await databaseService.getDailyGoal(today);
+                const goals = existingDailyGoal?.goals || goalInputs;
+                const normalizedVisibility = normalizeVisibility(next);
+                await databaseService.saveDailyGoal({
+                    date: today,
+                    goals,
+                    visibility: normalizedVisibility,
+                    updatedAt: new Date().toISOString(),
+                });
+            };
+            persist();
+            return next;
+        });
     };
 
     if (loading) {
@@ -509,102 +627,352 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
     return (
         <div className="history-container">
             <div className="history-header">
-                <button className="back-button" onClick={onBack}>
-                    ← Back
-                </button>
-                <h2>History Records</h2>
-            </div>
-            {/* Goal setting section */}
-            <div className="goals-section">
-                <h3>Learning Goal Settings</h3>
-                <div className="goals-container">
-                    {LANGUAGES.map((lang) => (
-                        <div className="goal-item" key={lang.key}>
-                            <label>{lang.label} Goal (minutes/day):</label>
-                            <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={goalInputs[lang.key] || 0}
-                                onChange={(e) =>
-                                    handleGoalInputChange(
-                                        lang.key,
-                                        e.target.value
-                                    )
-                                }
-                            />
-                            <button
-                                onClick={() => saveGoal(lang.key)}
-                                className="save-goal-btn"
-                            >
-                                Save
-                            </button>
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            {/* Data management buttons */}
-            <div className="data-management">
-                <button onClick={exportData} className="action-btn">
-                    Export Data
-                </button>
-                <label htmlFor="importBtn" className="action-btn">
-                    Import Data
-                </label>
-                <input
-                    type="file"
-                    id="importBtn"
-                    accept=".json"
-                    style={{ display: "none" }}
-                    onChange={handleFileSelect}
-                />
-                <button
-                    onClick={() => setShowManualEntry(true)}
-                    className="action-btn"
-                >
-                    Add Record
-                </button>
-                {selectedRecords.length > 0 && (
-                    <button
-                        onClick={batchDelete}
-                        className="action-btn delete-btn"
-                    >
-                        Batch Delete ({selectedRecords.length})
+                <div className="header-left">
+                    <button className="back-button" onClick={onBack}>
+                        ← Back
                     </button>
-                )}
+                    <h2>History</h2>
+                </div>
+                <div className="tab-switch">
+                    <button
+                        className={activeTab === "records" ? "tab active" : "tab"}
+                        onClick={() => setActiveTab("records")}
+                    >
+                        Records
+                    </button>
+                    <button
+                        className={activeTab === "settings" ? "tab active" : "tab"}
+                        onClick={() => setActiveTab("settings")}
+                    >
+                        Settings
+                    </button>
+                </div>
             </div>
 
-            {/* Filters */}
-            <div className="filters">
-                <div className="filter-group">
-                    <label htmlFor="dateFilter">Time:</label>
-                    <select
-                        id="dateFilter"
-                        value={dateFilter}
-                        onChange={(e) => setDateFilter(e.target.value)}
-                    >
-                        <option value="all">All Time</option>
-                        <option value="today">Today</option>
-                        <option value="week">This Week</option>
-                        <option value="month">This Month</option>
-                    </select>
+            {activeTab === "settings" ? (
+                <div className="settings-panel">
+                    <div className="goals-section">
+                        <h3>Learning Goals & Visibility</h3>
+                        <div className="goals-container">
+                            {LANGUAGES.map((lang) => (
+                                <div className="goal-item" key={lang.key}>
+                                    <div className="goal-language">
+                                        <span
+                                            className="language-dot"
+                                            style={{ backgroundColor: lang.color }}
+                                        />
+                                        <span className="language-label">{lang.label}</span>
+                                    </div>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        value={goalInputs[lang.key] || 0}
+                                        onChange={(e) =>
+                                            handleGoalInputChange(lang.key, e.target.value)
+                                        }
+                                    />
+                                    <label className="visibility-toggle">
+                                        <input
+                                            type="checkbox"
+                                            checked={languageVisibility[lang.key]}
+                                            onChange={() => toggleLanguageVisibility(lang.key)}
+                                        />
+                                        <span>Show</span>
+                                    </label>
+                                    <button
+                                        onClick={() => saveGoal(lang.key)}
+                                        className="save-goal-btn"
+                                    >
+                                        Save
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="data-management">
+                        <button onClick={exportData} className="action-btn">
+                            Export Data
+                        </button>
+                        <label htmlFor="importBtn" className="action-btn">
+                            Import Data
+                        </label>
+                        <input
+                            type="file"
+                            id="importBtn"
+                            accept=".json"
+                            style={{ display: "none" }}
+                            onChange={handleFileSelect}
+                        />
+                        <button
+                            onClick={() => setShowManualEntry(true)}
+                            className="action-btn"
+                        >
+                            Add Record
+                        </button>
+                    </div>
                 </div>
-                <div className="filter-group">
-                    <label htmlFor="languageFilter">Language:</label>
-                    <select
-                        id="languageFilter"
-                        value={languageFilter}
-                        onChange={(e) => setLanguageFilter(e.target.value)}
-                    >
-                        <option value="all">All Languages</option>
-                        <option value="cantonese">Cantonese</option>
-                        <option value="english">English</option>
-                        <option value="japanese">Japanese</option>
-                        <option value="spanish">Spanish</option>
-                    </select>
-                </div>
-            </div>
+            ) : (
+                <>
+                    <div className="layout-grid">
+                        <div className="left-column">
+                            <div className="stats-summary">
+                                <div className="panel-header">
+                                    <h3>Statistics Summary</h3>
+                                </div>
+                                {visibleLanguages.length === 0 ? (
+                                    <div className="no-records">All languages are hidden.</div>
+                                ) : (
+                                    <div className="stats-grid">
+                                        {visibleLanguages.map((lang) => (
+                                            <div className="stat-item" key={lang.key}>
+                                                <div className="stat-label">
+                                                    <span
+                                                        className="language-dot"
+                                                        style={{ backgroundColor: lang.color }}
+                                                    />
+                                                    {lang.label}
+                                                </div>
+                                                <span className="stat-value">
+                                                    {formatDuration(
+                                                        languageStats[
+                                                            lang.key as keyof typeof languageStats
+                                                        ] || 0
+                                                    )}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <Calendar
+                                languageFilter={languageFilter}
+                                goalInputs={goalInputs}
+                            />
+                        </div>
+
+                        <div className="right-column">
+                            <div className="records-list">
+                                <div className="records-list-header">
+                                    <h3>Detailed Records</h3>
+                                    <div className="list-header-actions">
+                                        <label className="merge-toggle">
+                                            <input
+                                                type="checkbox"
+                                                checked={mergeDisplay}
+                                                onChange={(e) =>
+                                                    setMergeDisplay(e.target.checked)
+                                                }
+                                            />
+                                            <span>Merge consecutive plays</span>
+                                        </label>
+                                        {selectedRecords.length > 0 && (
+                                            <button
+                                                onClick={batchDelete}
+                                                className="action-btn delete-btn"
+                                            >
+                                                Batch Delete ({selectedRecords.length})
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="filters compact">
+                                    <div className="filter-group">
+                                        <label htmlFor="dateFilter">Time:</label>
+                                        <select
+                                            id="dateFilter"
+                                            value={dateFilter}
+                                            onChange={(e) => setDateFilter(e.target.value)}
+                                        >
+                                            <option value="all">All Time</option>
+                                            <option value="today">Today</option>
+                                            <option value="week">This Week</option>
+                                            <option value="month">This Month</option>
+                                        </select>
+                                    </div>
+                                    <div className="filter-group">
+                                        <label htmlFor="languageFilter">Language:</label>
+                                        <select
+                                            id="languageFilter"
+                                            value={languageFilter}
+                                            onChange={(e) => setLanguageFilter(e.target.value)}
+                                        >
+                                            {languageOptions.map((option) => (
+                                                <option key={option.value} value={option.value}>
+                                                    {option.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+                                {filteredDisplayRecords.length === 0 ? (
+                                    <div className="no-records">No records</div>
+                                ) : (
+                                    <div className="records-grid">
+                                        {filteredDisplayRecords.map((record) => {
+                                            const languageMeta = LANGUAGES.find(
+                                                (lang) => lang.key === record.language
+                                            );
+                                            const langColor =
+                                                languageMeta?.color || "#6b7280";
+                                            const orderedSegments = [...record.segments].sort(
+                                                (a, b) => a.start - b.start
+                                            );
+                                            const spanDuration = Math.max(
+                                                record.spanEnd - record.spanStart,
+                                                1
+                                            );
+                                            const logoLetter =
+                                                (languageMeta?.label || "L").charAt(0);
+
+                                            const isSelected = record.mergedSessionIds.every((id) =>
+                                                selectedRecords.includes(id)
+                                            );
+
+                                            return (
+                                                <div
+                                                    key={record.mergedSessionIds.join("|")}
+                                                    className={`record-item ${isSelected ? "selected" : ""}`}
+                                                    onClick={() =>
+                                                        toggleRecordSelection(record.mergedSessionIds)
+                                                    }
+                                                >
+                                                    <div className="record-topline">
+                                                        <div className="record-row">
+                                                            <div
+                                                                className="record-logo-large"
+                                                                style={{
+                                                                    backgroundColor: `${langColor}1a`,
+                                                                    borderColor: `${langColor}33`,
+                                                                }}
+                                                            >
+                                                                {record.channelLogo ? (
+                                                                    <img
+                                                                        src={record.channelLogo}
+                                                                        alt="logo"
+                                                                        className="record-logo-img"
+                                                                    />
+                                                                ) : (
+                                                                    <span>{logoLetter}</span>
+                                                                )}
+                                                            </div>
+                                                            <div className="record-main">
+                                                                <div className="record-meta">
+                                                                    <div className="record-channel-name">
+                                                                        <span
+                                                                            className="language-dot"
+                                                                            style={{
+                                                                                backgroundColor: langColor,
+                                                                            }}
+                                                                        />
+                                                                        <span>
+                                                                            {record.channelName ||
+                                                                                languageMeta?.label ||
+                                                                                "Unknown"}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div className="record-duration-strong big">
+                                                                        {formatDuration(record.totalDuration)}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="record-title muted">
+                                                                    {record.title}
+                                                                </div>
+
+                                                                <div className="timeline-wrapper">
+                                                                    <div className="timeline-bar thin">
+                                                                        <div className="timeline-track subtle" />
+                                                                        {orderedSegments.map((segment, index) => {
+                                                                            const left =
+                                                                                ((segment.start - record.spanStart) /
+                                                                                    spanDuration) *
+                                                                                100;
+                                                                            const width =
+                                                                                ((segment.end - segment.start) /
+                                                                                    spanDuration) *
+                                                                                100;
+                                                                            return (
+                                                                                <div
+                                                                                    key={`${segment.start}-${index}`}
+                                                                                    className="timeline-segment soft"
+                                                                                    style={{
+                                                                                        left: `${left}%`,
+                                                                                        width: `${Math.max(width, 1)}%`,
+                                                                                        backgroundColor: langColor,
+                                                                                        opacity: 0.55,
+                                                                                    }}
+                                                                                />
+                                                                            );
+                                                                        })}
+                                                                        <div className="timeline-end">
+                                                                            {new Date(
+                                                                                record.spanEnd
+                                                                            ).toLocaleTimeString("zh-CN", {
+                                                                                hour: "2-digit",
+                                                                                minute: "2-digit",
+                                                                            })}
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="record-secondary">
+                                                                    <span className="record-date">
+                                                                        {new Date(
+                                                                            record.startDate
+                                                                        ).toLocaleString("zh-CN", {
+                                                                            year: "numeric",
+                                                                            month: "2-digit",
+                                                                            day: "2-digit",
+                                                                            hour: "2-digit",
+                                                                            minute: "2-digit",
+                                                                        })}
+                                                                    </span>
+                                                                    <div className="record-actions">
+                                                                        <button
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                editRecord(record);
+                                                                            }}
+                                                                            disabled={record.isMerged}
+                                                                            title={
+                                                                                record.isMerged
+                                                                                    ? "Disable merge view to edit individual segments"
+                                                                                    : ""
+                                                                            }
+                                                                            className="edit-btn"
+                                                                        >
+                                                                            Edit
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                deleteRecordGroup(
+                                                                                    record.mergedSessionIds
+                                                                                );
+                                                                            }}
+                                                                            className="delete-btn"
+                                                                        >
+                                                                            {record.isMerged
+                                                                                ? "Delete All Segments"
+                                                                                : "Delete"}
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </>
+            )}
 
             {/* Manual entry modal */}
             {showManualEntry && (
@@ -649,9 +1017,7 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
                                 />
                             </div>
                             <div className="form-group">
-                                <label htmlFor="entryUrl">
-                                    URL (optional):
-                                </label>
+                                <label htmlFor="entryUrl">URL (optional):</label>
                                 <input
                                     type="url"
                                     name="url"
@@ -812,151 +1178,6 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
                     </div>
                 </div>
             )}
-
-            {/* Statistics summary */}
-            <div className="stats-summary">
-                <h3>Statistics Summary</h3>
-                <div className="stats-grid">
-                    <div className="stat-item">
-                        <span className="stat-label">Cantonese</span>
-                        <span className="stat-value">
-                            {formatDuration(languageStats.cantonese)}
-                        </span>
-                    </div>
-                    <div className="stat-item">
-                        <span className="stat-label">English</span>
-                        <span className="stat-value">
-                            {formatDuration(languageStats.english)}
-                        </span>
-                    </div>
-                    <div className="stat-item">
-                        <span className="stat-label">Japanese</span>
-                        <span className="stat-value">
-                            {formatDuration(languageStats.japanese)}
-                        </span>
-                    </div>
-                    <div className="stat-item">
-                        <span className="stat-label">Spanish</span>
-                        <span className="stat-value">
-                            {formatDuration(languageStats.spanish)}
-                        </span>
-                    </div>
-                </div>
-            </div>
-
-            {/* Calendar view */}
-            <Calendar languageFilter={languageFilter} goalInputs={goalInputs} />
-
-            {/* Records list */}
-            <div className="records-list">
-                <div className="records-list-header">
-                    <h3>Detailed Records</h3>
-                    <label className="merge-toggle">
-                        <input
-                            type="checkbox"
-                            checked={mergeDisplay}
-                            onChange={(e) =>
-                                setMergeDisplay(e.target.checked)
-                            }
-                        />
-                        <span>Merge consecutive plays</span>
-                    </label>
-                </div>
-                {displayRecords.length === 0 ? (
-                    <div className="no-records">No records</div>
-                ) : (
-                    <div className="records-grid">
-                        {displayRecords.map((record) => (
-                            <div
-                                key={record.mergedSessionIds.join("|")}
-                                className="record-item"
-                            >
-                                <div className="record-header">
-                                    <input
-                                        type="checkbox"
-                                        checked={record.mergedSessionIds.every(
-                                            (id) => selectedRecords.includes(id)
-                                        )}
-                                        onChange={() =>
-                                            toggleRecordSelection(
-                                                record.mergedSessionIds
-                                            )
-                                        }
-                                        className="record-checkbox"
-                                    />
-                                    <span className="record-date">
-                                        {new Date(
-                                            record.startDate
-                                        ).toLocaleString("zh-CN", {
-                                            year: "numeric",
-                                            month: "2-digit",
-                                            day: "2-digit",
-                                            hour: "2-digit",
-                                            minute: "2-digit",
-                                        })}
-                                    </span>
-                                </div>
-                                <div className="record-content">
-                                    <div className="record-title">
-                                        {record.title}
-                                    </div>
-                                    <div className="record-details">
-                                        <span className="record-duration">
-                                            {formatDuration(
-                                                record.totalDuration
-                                            )}
-                                        </span>
-                                        <span className="record-language">
-                                            {{
-                                                cantonese: "Cantonese",
-                                                english: "English",
-                                                japanese: "Japanese",
-                                                spanish: "Spanish",
-                                            }[record.language] || "Unknown"}
-                                        </span>
-                                    </div>
-                                    {record.channelName && (
-                                        <div className="record-channel">
-                                            {record.channelLogo && (
-                                                <img
-                                                    src={record.channelLogo}
-                                                    alt="logo"
-                                                    className="channel-logo"
-                                                />
-                                            )}
-                                            <span>{record.channelName}</span>
-                                        </div>
-                                    )}
-                                </div>
-                                <div className="record-actions">
-                                    <button
-                                        onClick={() => editRecord(record)}
-                                        disabled={record.isMerged}
-                                        title={
-                                            record.isMerged
-                                                ? "Disable merge view to edit individual segments"
-                                                : ""
-                                        }
-                                        className="edit-btn"
-                                    >
-                                        Edit
-                                    </button>
-                                    <button
-                                        onClick={() =>
-                                            deleteRecordGroup(
-                                                record.mergedSessionIds
-                                            )
-                                        }
-                                        className="delete-btn"
-                                    >
-                                        {record.isMerged ? "Delete All Segments" : "Delete"}
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
         </div>
     );
 };

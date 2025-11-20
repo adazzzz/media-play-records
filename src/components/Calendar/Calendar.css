@@ -1,129 +1,103 @@
 /* 日历视图 */
 .calendar-view {
-  background-color: white;
-  border: 1px solid #e9ecef;
-  border-radius: 8px;
-  padding: 20px;
-  margin-bottom: 25px;
+  padding: 6px 0 10px 0;
 }
 
 .calendar-view h3 {
   margin: 0 0 15px 0;
-  color: #333;
+  color: #0f172a;
   font-size: 18px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .calendar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
 }
 
 .calendar-nav-btn {
   background: none;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 10px;
   cursor: pointer;
   font-size: 16px;
-  color: #666;
-}
-
-.calendar-nav-btn:hover {
-  background-color: #f8f9fa;
-  border-color: #007bff;
-  color: #007bff;
+  color: #475569;
 }
 
 .calendar-header h4 {
   margin: 0;
-  color: #333;
+  color: #0f172a;
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .calendar-grid {
   display: grid;
-  gap: 1px;
-  background-color: #e9ecef;
-  border-radius: 4px;
-  overflow: hidden;
+  gap: 6px;
 }
 
 .calendar-weekdays {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  background-color: #f8f9fa;
 }
 
 .calendar-weekdays > div {
-  padding: 10px;
+  padding: 6px;
   text-align: center;
   font-weight: 600;
-  color: #495057;
-  font-size: 14px;
+  color: #475569;
+  font-size: 12px;
 }
 
 .calendar-days {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
 }
 
 .calendar-day {
-  min-height: 80px;
-  padding: 8px;
-  background-color: white;
-  border: 1px solid #f1f3f4;
+  min-height: 70px;
+  padding: 6px;
+  background-color: #f8fafc;
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
   position: relative;
-}
-
-.calendar-day.other-month {
-  background-color: #f8f9fa;
-  color: #adb5bd;
-}
-
-.calendar-day.today {
-  background-color: #e3f2fd;
-  border-color: #2196f3;
-}
-
-.calendar-day.achieved {
-  background-color: #e8f5e8;
-  border-color: #4caf50;
+  border: none;
 }
 
 .day-number {
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 4px;
-}
-
-.other-month .day-number {
-  color: #adb5bd;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 6px;
 }
 
 .day-duration {
-  font-size: 10px;
-  color: #666;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .lang-duration {
-  margin-bottom: 2px;
-  padding: 1px 3px;
-  background-color: rgba(0, 123, 255, 0.1);
-  border-radius: 2px;
-  font-size: 9px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
 }
 
-.achieved .lang-duration {
-  background-color: rgba(76, 175, 80, 0.2);
-  color: #2e7d32;
+.calendar-day.today {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
+.calendar-day.placeholder {
+  background: transparent;
+  min-height: 0;
+  padding: 0;
+}
 /* 响应式设计 */
 @media (max-width: 480px) {
   .calendar-day {

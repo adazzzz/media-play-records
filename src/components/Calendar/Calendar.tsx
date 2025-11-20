@@ -14,8 +14,15 @@ interface CalendarDay {
     isCurrentMonth: boolean;
     isToday: boolean;
     duration?: Record<string, number>;
-    isAchieved?: boolean;
+    isPlaceholder?: boolean;
 }
+
+const LANG_COLORS: Record<string, string> = {
+    cantonese: "#f97316",
+    english: "#2563eb",
+    japanese: "#16a34a",
+    spanish: "#dc2626",
+};
 
 const Calendar: React.FC<CalendarProps> = ({ languageFilter, goalInputs }) => {
     const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -25,7 +32,7 @@ const Calendar: React.FC<CalendarProps> = ({ languageFilter, goalInputs }) => {
 
     useEffect(() => {
         updateDailyDurations();
-    }, []);
+    }, [languageFilter, goalInputs]);
 
     // Update daily duration data
     const updateDailyDurations = async () => {
@@ -57,24 +64,6 @@ const Calendar: React.FC<CalendarProps> = ({ languageFilter, goalInputs }) => {
         }
     };
 
-    // Check if a day meets the goal
-    const isDayAchieved = (dateStr: string, languageFilter: string) => {
-        const dayRecord = dailyDurations.get(dateStr);
-        if (!dayRecord) return false;
-
-        if (languageFilter === "all") {
-            return Object.entries(dayRecord).some(([lang, duration]) => {
-                const goal = goalInputs[lang] || 0;
-                return goal > 0 && Math.floor(duration / 60) >= goal;
-            });
-        } else {
-            const goal = goalInputs[languageFilter] || 0;
-            return (
-                goal > 0 && Math.floor(dayRecord[languageFilter] / 60) >= goal
-            );
-        }
-    };
-
     // Generate calendar data
     const generateCalendarDays = (): CalendarDay[] => {
         const year = currentMonth.getFullYear();
@@ -86,14 +75,13 @@ const Calendar: React.FC<CalendarProps> = ({ languageFilter, goalInputs }) => {
 
         const days: CalendarDay[] = [];
 
-        // Add previous month's dates
-        const prevMonthLastDay = new Date(year, month, 0);
-        for (let i = firstDayWeekday - 1; i >= 0; i--) {
-            const day = prevMonthLastDay.getDate() - i;
+        // Add empty placeholders to align first weekday
+        for (let i = 0; i < firstDayWeekday; i++) {
             days.push({
-                date: new Date(year, month - 1, day),
+                date: new Date(),
                 isCurrentMonth: false,
                 isToday: false,
+                isPlaceholder: true,
             });
         }
 
@@ -113,17 +101,6 @@ const Calendar: React.FC<CalendarProps> = ({ languageFilter, goalInputs }) => {
                 isCurrentMonth: true,
                 isToday,
                 duration: dailyDurations.get(dateStr),
-                isAchieved: isDayAchieved(dateStr, languageFilter),
-            });
-        }
-
-        // Add next month's dates
-        const remainingDays = 42 - days.length;
-        for (let i = 1; i <= remainingDays; i++) {
-            days.push({
-                date: new Date(year, month + 1, i),
-                isCurrentMonth: false,
-                isToday: false,
             });
         }
 
@@ -145,7 +122,7 @@ const Calendar: React.FC<CalendarProps> = ({ languageFilter, goalInputs }) => {
 
     return (
         <div className="calendar-view">
-            <h3>Calendar View</h3>
+            <h3>Calendar</h3>
             <div className="calendar-header">
                 <button
                     onClick={() => changeMonth("prev")}
@@ -178,47 +155,56 @@ const Calendar: React.FC<CalendarProps> = ({ languageFilter, goalInputs }) => {
                         <div
                             key={index}
                             className={`calendar-day ${
-                                !day.isCurrentMonth ? "other-month" : ""
-                            } ${day.isToday ? "today" : ""} ${
-                                day.isAchieved ? "achieved" : ""
-                            }`}
+                                day.isPlaceholder ? "placeholder" : ""
+                            } ${day.isToday ? "today" : ""}`}
                         >
-                            <span className="day-number">
-                                {day.date.getDate()}
-                            </span>
-                            {day.isCurrentMonth && day.duration && (
-                                <div className="day-duration">
-                                    {languageFilter === "all" ? (
-                                        Object.entries(day.duration).map(
-                                            ([lang, duration]) => {
-                                                const goal =
-                                                    goalInputs[lang] || 0;
-                                                if (goal > 0 && duration > 0) {
-                                                    return (
-                                                        <div
-                                                            key={lang}
-                                                            className="lang-duration"
-                                                        >
-                                                            {Math.floor(
-                                                                duration / 60
-                                                            )}
-                                                            /{goal}min
-                                                        </div>
-                                                    );
-                                                }
-                                                return null;
-                                            }
-                                        )
-                                    ) : (
-                                        <div className="lang-duration">
-                                            {Math.floor(
-                                                day.duration[languageFilter] /
-                                                    60
-                                            )}
-                                            min
+                            {!day.isPlaceholder && (
+                                <>
+                                    <span className="day-number">
+                                        {day.date.getDate()}
+                                    </span>
+                                    {day.isCurrentMonth && day.duration && (
+                                        <div className="day-duration">
+                                            {(languageFilter === "all"
+                                                ? Object.entries(day.duration)
+                                                : [
+                                                      [
+                                                          languageFilter,
+                                                          day.duration[
+                                                              languageFilter
+                                                          ],
+                                                      ],
+                                                  ]
+                                            ).map(([lang, duration]) => {
+                                                const numericDuration =
+                                                    typeof duration === "number"
+                                                        ? duration
+                                                        : 0;
+                                                if (numericDuration <= 0) return null;
+                                                const goal = goalInputs[lang] || 0;
+                                                const achieved =
+                                                    goal > 0 &&
+                                                    Math.floor(numericDuration / 60) >= goal;
+                                                const color = LANG_COLORS[lang] || "#475569";
+                                                const bgOpacity = achieved ? 0.7 : 0.35;
+                                                const textColor = achieved ? "#ffffff" : "#0f172a";
+                                                return (
+                                                    <div
+                                                        key={lang}
+                                                        className="lang-duration"
+                                                        style={{
+                                                            backgroundColor: color,
+                                                            opacity: bgOpacity,
+                                                            color: textColor,
+                                                        }}
+                                                    >
+                                                        {Math.floor(numericDuration / 60)}m
+                                                    </div>
+                                                );
+                                            })}
                                         </div>
                                     )}
-                                </div>
+                                </>
                             )}
                         </div>
                     ))}
