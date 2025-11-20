@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { databaseService } from "../../services/database";
 import { DailyGoal, PlaybackRecord } from "../../types/database";
 import { formatDuration } from "../../utils/time";
@@ -17,6 +17,94 @@ const LANGUAGES = [
     { key: "spanish", label: "Spanish" },
 ];
 
+type DisplayRecord = PlaybackRecord & {
+    mergedSessionIds: string[];
+    totalDuration: number;
+    startDate: string;
+    isMerged: boolean;
+};
+
+const getVideoKey = (record: PlaybackRecord) =>
+    `${record.url || record.title}-${record.language}`;
+
+const buildDisplayRecords = (
+    records: PlaybackRecord[],
+    mergeConsecutive: boolean
+): DisplayRecord[] => {
+    if (!mergeConsecutive) {
+        return records.map((record) => ({
+            ...record,
+            mergedSessionIds: [record.sessionId],
+            totalDuration: record.duration,
+            startDate: record.date,
+            isMerged: false,
+        }));
+    }
+
+    const merged: DisplayRecord[] = [];
+    let current: DisplayRecord | null = null;
+    let lastMergedDate: string | null = null;
+    const pushCurrent = (record: DisplayRecord | null) => {
+        if (!record) return;
+        merged.push({
+            ...record,
+            isMerged: record.mergedSessionIds.length > 1,
+        });
+    };
+
+    records.forEach((record) => {
+        const videoKey = getVideoKey(record);
+        if (current) {
+            const prevDate = lastMergedDate
+                ? new Date(lastMergedDate)
+                : new Date(current.startDate);
+            const currentDate = new Date(record.date);
+            const gapHours =
+                Math.abs(prevDate.getTime() - currentDate.getTime()) /
+                (1000 * 60 * 60);
+            const crossesDay =
+                prevDate.getFullYear() !== currentDate.getFullYear() ||
+                prevDate.getMonth() !== currentDate.getMonth() ||
+                prevDate.getDate() !== currentDate.getDate();
+
+            const shouldMerge =
+                getVideoKey(current) === videoKey &&
+                !(crossesDay && gapHours > 2);
+
+            if (shouldMerge) {
+                current.totalDuration += record.duration;
+                current.startDate =
+                    new Date(record.date).getTime() <
+                    new Date(current.startDate).getTime()
+                        ? record.date
+                        : current.startDate;
+                current.mergedSessionIds.push(record.sessionId);
+                lastMergedDate = record.date;
+                if (!current.channelLogo) current.channelLogo = record.channelLogo;
+                if (!current.channelName) current.channelName = record.channelName;
+                return;
+            }
+
+            pushCurrent(current);
+        } else {
+            lastMergedDate = null;
+        }
+
+        current = {
+            ...record,
+            mergedSessionIds: [record.sessionId],
+            totalDuration: record.duration,
+            startDate: record.date,
+            isMerged: false,
+        };
+        lastMergedDate = record.date;
+    });
+
+    pushCurrent(current);
+
+    return merged;
+};
+
 const History: React.FC<HistoryProps> = ({ onBack }) => {
     const [goals, setGoals] = useState<DailyGoal[]>([]);
     const [records, setRecords] = useState<PlaybackRecord[]>([]);
@@ -34,6 +122,7 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
     const [selectedRecords, setSelectedRecords] = useState<string[]>([]);
     const [goalInputs, setGoalInputs] =
         useState<Record<string, number>>(DEFAULT_DAILY_GOAL);
+    const [mergeDisplay, setMergeDisplay] = useState(true);
 
     useEffect(() => {
         loadGoals();
@@ -139,6 +228,10 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
     };
 
     const languageStats = getLanguageStats();
+    const displayRecords = useMemo(
+        () => buildDisplayRecords(records, mergeDisplay),
+        [records, mergeDisplay]
+    );
 
     // Data management functions
     const exportData = async () => {
@@ -249,10 +342,21 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
         }
     };
 
-    const deleteRecord = async (sessionId: string) => {
-        if (confirm("Are you sure you want to delete this record?")) {
+    const deleteRecordGroup = async (sessionIds: string[]) => {
+        if (sessionIds.length === 0) return;
+        const uniqueIds = Array.from(new Set(sessionIds));
+        const message =
+            uniqueIds.length === 1
+                ? "Are you sure you want to delete this record?"
+                : `Delete this merged record? This will remove ${uniqueIds.length} segments.`;
+        if (confirm(message)) {
             try {
-                await databaseService.deleteRecord(sessionId);
+                for (const sessionId of uniqueIds) {
+                    await databaseService.deleteRecord(sessionId);
+                }
+                setSelectedRecords((prev) =>
+                    prev.filter((id) => !uniqueIds.includes(id))
+                );
                 await loadRecords();
             } catch (error) {
                 console.error("Error deleting record:", error);
@@ -328,7 +432,8 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
             )
         ) {
             try {
-                for (const sessionId of selectedRecords) {
+                const uniqueIds = Array.from(new Set(selectedRecords));
+                for (const sessionId of uniqueIds) {
                     await databaseService.deleteRecord(sessionId);
                 }
                 setSelectedRecords([]);
@@ -341,12 +446,18 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
         }
     };
 
-    const toggleRecordSelection = (sessionId: string) => {
-        setSelectedRecords((prev) =>
-            prev.includes(sessionId)
-                ? prev.filter((id) => id !== sessionId)
-                : [...prev, sessionId]
-        );
+    const toggleRecordSelection = (sessionIds: string | string[]) => {
+        const ids = Array.isArray(sessionIds) ? sessionIds : [sessionIds];
+        setSelectedRecords((prev) => {
+            const next = new Set(prev);
+            const allSelected = ids.every((id) => next.has(id));
+            if (allSelected) {
+                ids.forEach((id) => next.delete(id));
+            } else {
+                ids.forEach((id) => next.add(id));
+            }
+            return Array.from(next);
+        });
     };
 
     // Save goal
@@ -738,37 +849,51 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
 
             {/* Records list */}
             <div className="records-list">
-                <h3>Detailed Records</h3>
-                {records.length === 0 ? (
+                <div className="records-list-header">
+                    <h3>Detailed Records</h3>
+                    <label className="merge-toggle">
+                        <input
+                            type="checkbox"
+                            checked={mergeDisplay}
+                            onChange={(e) =>
+                                setMergeDisplay(e.target.checked)
+                            }
+                        />
+                        <span>Merge consecutive plays</span>
+                    </label>
+                </div>
+                {displayRecords.length === 0 ? (
                     <div className="no-records">No records</div>
                 ) : (
                     <div className="records-grid">
-                        {records.map((record) => (
-                            <div key={record.sessionId} className="record-item">
+                        {displayRecords.map((record) => (
+                            <div
+                                key={record.mergedSessionIds.join("|")}
+                                className="record-item"
+                            >
                                 <div className="record-header">
                                     <input
                                         type="checkbox"
-                                        checked={selectedRecords.includes(
-                                            record.sessionId
+                                        checked={record.mergedSessionIds.every(
+                                            (id) => selectedRecords.includes(id)
                                         )}
                                         onChange={() =>
                                             toggleRecordSelection(
-                                                record.sessionId
+                                                record.mergedSessionIds
                                             )
                                         }
                                         className="record-checkbox"
                                     />
                                     <span className="record-date">
-                                        {new Date(record.date).toLocaleString(
-                                            "zh-CN",
-                                            {
-                                                year: "numeric",
-                                                month: "2-digit",
-                                                day: "2-digit",
-                                                hour: "2-digit",
-                                                minute: "2-digit",
-                                            }
-                                        )}
+                                        {new Date(
+                                            record.startDate
+                                        ).toLocaleString("zh-CN", {
+                                            year: "numeric",
+                                            month: "2-digit",
+                                            day: "2-digit",
+                                            hour: "2-digit",
+                                            minute: "2-digit",
+                                        })}
                                     </span>
                                 </div>
                                 <div className="record-content">
@@ -777,7 +902,9 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
                                     </div>
                                     <div className="record-details">
                                         <span className="record-duration">
-                                            {formatDuration(record.duration)}
+                                            {formatDuration(
+                                                record.totalDuration
+                                            )}
                                         </span>
                                         <span className="record-language">
                                             {{
@@ -804,17 +931,25 @@ const History: React.FC<HistoryProps> = ({ onBack }) => {
                                 <div className="record-actions">
                                     <button
                                         onClick={() => editRecord(record)}
+                                        disabled={record.isMerged}
+                                        title={
+                                            record.isMerged
+                                                ? "Disable merge view to edit individual segments"
+                                                : ""
+                                        }
                                         className="edit-btn"
                                     >
                                         Edit
                                     </button>
                                     <button
                                         onClick={() =>
-                                            deleteRecord(record.sessionId)
+                                            deleteRecordGroup(
+                                                record.mergedSessionIds
+                                            )
                                         }
                                         className="delete-btn"
                                     >
-                                        Delete
+                                        {record.isMerged ? "Delete All Segments" : "Delete"}
                                     </button>
                                 </div>
                             </div>
